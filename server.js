@@ -12,6 +12,11 @@ const upload = multer({
   limits: { fileSize: 4 * 1024 * 1024 },
 });
 
+app.use((req, _res, next) => {
+  console.log(`${new Date().toISOString()} ${req.method} ${req.path}`);
+  next();
+});
+
 app.use(express.static(path.join(__dirname)));
 
 function formatField(label, value) {
@@ -161,6 +166,10 @@ app.get("/health", (_req, res) => {
   res.status(200).json({ ok: true });
 });
 
+app.get("/quote", (_req, res) => {
+  res.redirect(303, "/");
+});
+
 app.post("/quote", upload.array("drawings"), async (req, res) => {
   try {
     if (!process.env.SMTP_USER || !process.env.SMTP_PASS || !process.env.MAIL_TO) {
@@ -264,6 +273,10 @@ app.post("/quote", upload.array("drawings"), async (req, res) => {
       .status(500)
       .send("Sorry, something went wrong sending your request.");
   }
+});
+
+app.use((_req, res) => {
+  res.status(404).send("Not Found. Please open / and submit the form.");
 });
 
 const port = Number(process.env.PORT || 3000);
