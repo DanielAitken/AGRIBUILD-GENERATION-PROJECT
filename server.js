@@ -3,6 +3,9 @@ const multer = require("multer");
 const nodemailer = require("nodemailer");
 const PDFDocument = require("pdfkit");
 const path = require("path");
+const https = require("https");
+const fs = require("fs/promises");
+const crypto = require("crypto");
 
 require("dotenv").config();
 
@@ -19,6 +22,13 @@ app.use((req, _res, next) => {
 
 app.use(express.static(path.join(__dirname)));
 
+function firstDefined(...values) {
+  for (const value of values) {
+    if (value && String(value).trim()) return String(value).trim();
+  }
+  return "";
+}
+
 function formatField(label, value) {
   if (!value) return `${label}:`;
   return `${label}: ${value}`;
@@ -26,6 +36,223 @@ function formatField(label, value) {
 
 function valueOrDefault(value) {
   return value && String(value).trim() ? String(value).trim() : "Not provided";
+}
+
+function isLikelyEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
+}
+
+function sendQuoteResponse(req, res, statusCode, ok, message, data) {
+  const accept = String(req.headers.accept || "");
+  if (accept.includes("application/json")) {
+    return res.status(statusCode).json({ ok, message, ...(data || {}) });
+  }
+  return res.status(statusCode).send(message);
+}
+
+function safeFilename(value) {
+  const cleaned = String(value || "file").replace(/[^\w.\- ]+/g, "_").trim();
+  return cleaned || "file";
+}
+
+async function saveSubmission({ body, files, lines, pdfBuffer }) {
+  const submissionsRoot = path.join(__dirname, "submissions");
+  const submissionId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${crypto
+    .randomBytes(3)
+    .toString("hex")}`;
+  const submissionDir = path.join(submissionsRoot, submissionId);
+  const uploadsDir = path.join(submissionDir, "uploads");
+
+  await fs.mkdir(uploadsDir, { recursive: true });
+  await fs.writeFile(path.join(submissionDir, "quote-request.pdf"), pdfBuffer);
+  await fs.writeFile(path.join(submissionDir, "answers.txt"), lines.join("\n"), "utf8");
+  await fs.writeFile(
+    path.join(submissionDir, "form.json"),
+    JSON.stringify(body, null, 2),
+    "utf8"
+  );
+
+  let fileIndex = 0;
+  for (const file of files || []) {
+    fileIndex += 1;
+    const filename = `${String(fileIndex).padStart(2, "0")}-${safeFilename(
+      file.originalname
+    )}`;
+    await fs.writeFile(path.join(uploadsDir, filename), file.buffer);
+  }
+
+  return submissionId;
+}
+
+function parseJsonSafe(value) {
+  try {
+    return JSON.parse(value);
+  } catch (_err) {
+    return null;
+  }
+}
+
+function httpsRequest({ url, method, headers, body }) {
+  return new Promise((resolve, reject) => {
+    const request = https.request(
+      url,
+      { method: method || "GET", headers: headers || {} },
+      (response) => {
+        const chunks = [];
+        response.on("data", (chunk) => chunks.push(chunk));
+        response.on("end", () => {
+          resolve({
+            statusCode: response.statusCode || 0,
+            body: Buffer.concat(chunks).toString("utf8"),
+          });
+        });
+      }
+    );
+
+    request.on("error", reject);
+    if (body) request.write(body);
+    request.end();
+  });
+}
+
+function getGraphConfig() {
+  const tenantId = firstDefined(process.env.GRAPH_TENANT_ID);
+  const clientId = firstDefined(process.env.GRAPH_CLIENT_ID);
+  const clientSecret = firstDefined(process.env.GRAPH_CLIENT_SECRET);
+  if (!tenantId || !clientId || !clientSecret) return null;
+  return { tenantId, clientId, clientSecret };
+}
+
+function getSmtpConfig() {
+  if (!process.env.SMTP_USER || !process.env.SMTP_PASS) return null;
+  const smtpPort = Number(process.env.SMTP_PORT || 587);
+  const smtpSecure = process.env.SMTP_SECURE === "true" || smtpPort === 465;
+  return {
+    host: process.env.SMTP_HOST || "smtp.office365.com",
+    port: smtpPort,
+    secure: smtpSecure,
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS,
+  };
+}
+
+async function getGraphAccessToken(config) {
+  const tokenUrl = `https://login.microsoftonline.com/${encodeURIComponent(
+    config.tenantId
+  )}/oauth2/v2.0/token`;
+  const body = new URLSearchParams({
+    client_id: config.clientId,
+    client_secret: config.clientSecret,
+    grant_type: "client_credentials",
+    scope: "https://graph.microsoft.com/.default",
+  }).toString();
+
+  const response = await httpsRequest({
+    url: tokenUrl,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "Content-Length": Buffer.byteLength(body),
+    },
+    body,
+  });
+
+  const parsed = parseJsonSafe(response.body) || {};
+  if (response.statusCode < 200 || response.statusCode >= 300 || !parsed.access_token) {
+    const err = new Error(
+      `Graph token request failed (${response.statusCode}): ${response.body}`
+    );
+    err.userMessage =
+      "Microsoft Graph authentication failed. Check GRAPH_TENANT_ID, GRAPH_CLIENT_ID, and GRAPH_CLIENT_SECRET.";
+    throw err;
+  }
+
+  return parsed.access_token;
+}
+
+function toGraphAttachment(attachment) {
+  return {
+    "@odata.type": "#microsoft.graph.fileAttachment",
+    name: attachment.filename,
+    contentType: attachment.contentType || "application/octet-stream",
+    contentBytes: Buffer.from(attachment.content).toString("base64"),
+  };
+}
+
+async function sendViaGraph(graphConfig, mail) {
+  const accessToken = await getGraphAccessToken(graphConfig);
+  const endpoint = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(
+    mail.fromAddress
+  )}/sendMail`;
+
+  const payload = {
+    message: {
+      subject: mail.subject,
+      body: {
+        contentType: "Text",
+        content: mail.text,
+      },
+      toRecipients: [{ emailAddress: { address: mail.forwardTo } }],
+      attachments: (mail.attachments || []).map(toGraphAttachment),
+    },
+    saveToSentItems: true,
+  };
+
+  if (mail.replyTo) {
+    payload.message.replyTo = [{ emailAddress: { address: mail.replyTo } }];
+  }
+
+  const body = JSON.stringify(payload);
+  const response = await httpsRequest({
+    url: endpoint,
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(body),
+    },
+    body,
+  });
+
+  if (response.statusCode !== 202) {
+    const parsed = parseJsonSafe(response.body);
+    const graphMessage =
+      parsed &&
+      parsed.error &&
+      (parsed.error.message || parsed.error.code);
+    const err = new Error(
+      `Graph sendMail failed (${response.statusCode}): ${graphMessage || response.body}`
+    );
+    if (response.statusCode === 403) {
+      err.userMessage =
+        "Graph API permission denied. Grant Mail.Send application permission and admin consent.";
+    } else {
+      err.userMessage = "Could not send through Microsoft Graph. Check Azure app/mailbox setup.";
+    }
+    throw err;
+  }
+}
+
+async function sendViaSmtp(smtpConfig, mail) {
+  const transporter = nodemailer.createTransport({
+    host: smtpConfig.host,
+    port: smtpConfig.port,
+    secure: smtpConfig.secure,
+    auth: {
+      user: smtpConfig.user,
+      pass: smtpConfig.pass,
+    },
+    tls: { ciphers: "TLSv1.2" },
+  });
+
+  await transporter.sendMail({
+    from: mail.fromAddress,
+    to: mail.forwardTo,
+    subject: mail.subject,
+    text: mail.text,
+    replyTo: mail.replyTo || undefined,
+    attachments: mail.attachments,
+  });
 }
 
 function buildQuotePdf(body, files) {
@@ -102,7 +329,7 @@ function buildQuotePdf(body, files) {
           ["Email", "email"],
           ["Telephone", "telephone"],
           ["Return date", "return_date"],
-          ["Correspondence address", "contact_address"],
+          ["Additional requirements", "client_message"],
           ["Heard about us", "hear_about"],
           ["Marketing consent", "marketing"],
         ],
@@ -172,26 +399,14 @@ app.get("/quote", (_req, res) => {
 
 app.post("/quote", upload.array("drawings"), async (req, res) => {
   try {
-    if (!process.env.SMTP_USER || !process.env.SMTP_PASS || !process.env.MAIL_TO) {
-      throw new Error(
-        "Missing required mail settings: SMTP_USER, SMTP_PASS, and MAIL_TO."
-      );
-    }
-
-    const smtpPort = Number(process.env.SMTP_PORT || 587);
-    const smtpSecure =
-      process.env.SMTP_SECURE === "true" || smtpPort === 465;
-
-    const transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST || "smtp.office365.com",
-      port: smtpPort,
-      secure: smtpSecure,
-      auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS,
-      },
-      tls: { ciphers: "TLSv1.2" },
-    });
+    const forwardTo = firstDefined(process.env.FORWARD_TO, process.env.MAIL_TO);
+    const fromAddress = firstDefined(
+      process.env.APP_MAILBOX,
+      process.env.SMTP_FROM,
+      process.env.SMTP_USER
+    );
+    const graphConfig = getGraphConfig();
+    const smtpConfig = getSmtpConfig();
 
     const body = req.body || {};
     const lines = [
@@ -230,7 +445,7 @@ app.post("/quote", upload.array("drawings"), async (req, res) => {
       formatField("Email", body.email),
       formatField("Telephone", body.telephone),
       formatField("Return date", body.return_date),
-      formatField("Correspondence address", body.contact_address),
+      formatField("Additional requirements", body.client_message),
       formatField("Heard about us", body.hear_about),
       formatField("Marketing consent", body.marketing),
     ];
@@ -255,24 +470,81 @@ app.post("/quote", upload.array("drawings"), async (req, res) => {
         ? `New quote request: ${subjectPieces.join(" ")}`
         : "New quote request";
 
-    await transporter.sendMail({
-      from: process.env.SMTP_FROM || process.env.SMTP_USER,
-      to: process.env.MAIL_TO,
+    const mail = {
+      fromAddress,
+      forwardTo,
       subject,
       text: lines.join("\n"),
-      replyTo: body.email || undefined,
+      replyTo: isLikelyEmail(body.email) ? body.email : "",
       attachments,
+    };
+    const submissionId = await saveSubmission({
+      body,
+      files: req.files || [],
+      lines,
+      pdfBuffer,
     });
 
-    res
-      .status(200)
-      .send("Thanks! Your quote request has been sent.");
+    const hasTransport = Boolean(graphConfig || smtpConfig);
+    const hasValidAddresses =
+      isLikelyEmail(fromAddress) && isLikelyEmail(forwardTo);
+
+    if (hasTransport && hasValidAddresses) {
+      try {
+        if (graphConfig) {
+          await sendViaGraph(graphConfig, mail);
+        } else {
+          await sendViaSmtp(smtpConfig, mail);
+        }
+        sendQuoteResponse(
+          req,
+          res,
+          200,
+          true,
+          `Thanks! Your quote request has been sent. Reference: ${submissionId}.`,
+          { reference: submissionId, emailed: true }
+        );
+        return;
+      } catch (mailErr) {
+        console.error("Email send failed (submission saved locally):", mailErr);
+        sendQuoteResponse(
+          req,
+          res,
+          200,
+          true,
+          `Your request was saved successfully (reference: ${submissionId}). Email delivery is currently unavailable.`,
+          { reference: submissionId, emailed: false }
+        );
+        return;
+      }
+    }
+
+    sendQuoteResponse(
+      req,
+      res,
+      200,
+      true,
+      `Your request was saved successfully (reference: ${submissionId}).`,
+      { reference: submissionId, emailed: false }
+    );
   } catch (err) {
-    console.error("Email send failed:", err);
-    res
-      .status(500)
-      .send("Sorry, something went wrong sending your request.");
+    console.error("Submission failed:", err);
+    const userMessage =
+      err && err.userMessage
+        ? err.userMessage
+        : "Sorry, something went wrong saving your request.";
+    sendQuoteResponse(
+      req,
+      res,
+      500,
+      false,
+      userMessage
+    );
   }
+});
+
+app.get("/thank-you", (_req, res) => {
+  res.sendFile(path.join(__dirname, "thank-you.html"));
 });
 
 app.use((_req, res) => {

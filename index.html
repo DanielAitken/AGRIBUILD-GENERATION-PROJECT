@@ -142,6 +142,15 @@
     }
     .qb-chip-active .qb-chip-dot{ background:var(--qb-primary); }
     .qb-help{ font-size:0.75rem; color:var(--qb-text-muted); }
+    .qb-submit-message{
+      margin-top:0.55rem;
+      font-size:0.84rem;
+      min-height:1.2em;
+      text-align:right;
+      color:var(--qb-text-muted);
+    }
+    .qb-submit-message-success{ color:#0f766e; }
+    .qb-submit-message-error{ color:#b91c1c; }
     .qb-note{
       font-size:0.75rem; padding:0.6rem 0.75rem; background:#f2f5ff;
       border-radius:10px; border:1px dashed #c8d2f0; color:var(--qb-primary); margin-top:0.4rem;
@@ -723,13 +732,13 @@
                 <input type="date" name="return_date" class="qb-input" />
               </div>
 
-              <div class="qb-field qb-grid qb-grid-1">
+              <div class="qb-field qb-field-full">
                 <label class="qb-label">
-                  Correspondence address
+                  Project requirements / message
                   <span>optional</span>
                 </label>
-                <textarea name="contact_address" class="qb-textarea"
-                  placeholder="Only if different from the site address."></textarea>
+                <textarea name="client_message" class="qb-textarea"
+                  placeholder="Tell us anything important about your requirements, timing, access, or preferred specification."></textarea>
               </div>
 
               <div class="qb-field">
@@ -790,6 +799,7 @@
                 <button type="submit" class="qb-btn qb-btn-primary">Submit quote request →</button>
               </div>
             </div>
+            <div id="qbSubmitMessage" class="qb-submit-message" aria-live="polite"></div>
           </div>
         </div>
 
@@ -927,6 +937,8 @@
       const roofModalImg = document.getElementById("roofModalImg");
       const roofModalTitle = document.getElementById("roofModalTitle");
       const roofModalClose = document.getElementById("roofModalClose");
+      const submitButton = form.querySelector('button[type="submit"]');
+      const submitMessage = document.getElementById("qbSubmitMessage");
       let currentStep = 0;
 
       function findRoofOption(keyword) {
@@ -1550,8 +1562,70 @@
       form.addEventListener("input", updateSummary);
       form.addEventListener("change", updateSummary);
 
-      form.addEventListener("submit", () => {
+      function setSubmitMessage(text, type) {
+        if (!submitMessage) return;
+        submitMessage.textContent = text || "";
+        submitMessage.classList.remove(
+          "qb-submit-message-success",
+          "qb-submit-message-error"
+        );
+        if (type === "success") submitMessage.classList.add("qb-submit-message-success");
+        if (type === "error") submitMessage.classList.add("qb-submit-message-error");
+      }
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
         updateSummary();
+        if (!submitButton) return;
+        if (submitButton.disabled) return;
+
+        submitButton.disabled = true;
+        const originalLabel = submitButton.textContent;
+        submitButton.textContent = "Sending...";
+        setSubmitMessage("Submitting your request...", "");
+
+        try {
+          const response = await fetch(form.action || "/quote", {
+            method: "POST",
+            body: new FormData(form),
+            headers: { Accept: "application/json" },
+          });
+
+          const rawText = await response.text();
+          const payload = (() => {
+            try {
+              return rawText ? JSON.parse(rawText) : {};
+            } catch (_err) {
+              return {};
+            }
+          })();
+          const textFallback = rawText ? rawText.trim().slice(0, 180) : "";
+          const message =
+            payload && payload.message
+              ? payload.message
+              : response.ok
+              ? "Thanks! Your quote request has been sent."
+              : textFallback || "Sorry, something went wrong sending your request.";
+
+          if (response.ok) {
+            const reference = payload && payload.reference ? String(payload.reference) : "";
+            const destination = reference
+              ? `/thank-you?reference=${encodeURIComponent(reference)}`
+              : "/thank-you";
+            window.location.href = destination;
+            return;
+          }
+
+          setSubmitMessage(message, "error");
+        } catch (_error) {
+          setSubmitMessage(
+            "Could not send your request right now. Please try again.",
+            "error"
+          );
+        } finally {
+          submitButton.disabled = false;
+          submitButton.textContent = originalLabel;
+        }
       });
 
       // Initialise

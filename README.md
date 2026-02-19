@@ -5,9 +5,8 @@ This project now supports:
 - Public access to the quote form at `/`
 - Form submission to `/quote`
 - Automatic PDF generation of form answers
-- Email delivery to your inbox with:
-  - Generated PDF attached
-  - Any uploaded drawings attached
+- Local storage of each submission (PDF + answers + uploads)
+- Optional email delivery (Graph/SMTP) when configured
 
 ## 1. Install and run locally
 
@@ -22,14 +21,25 @@ Open `http://localhost:3000`.
 
 Copy `.env.example` to `.env` and set:
 
+- `PORT`
+
+Optional email config (only if you want forwarding):
+
+- `APP_MAILBOX` (the mailbox identity the app sends from)
+- `FORWARD_TO` (who receives forwarded submissions)
+- `MAIL_TO` (legacy fallback if `FORWARD_TO` is not set)
+- `GRAPH_TENANT_ID`
+- `GRAPH_CLIENT_ID`
+- `GRAPH_CLIENT_SECRET`
+
+Optional SMTP fallback (if Graph is not configured):
+
 - `SMTP_HOST`
 - `SMTP_PORT`
-- `SMTP_SECURE` (`true` for 465, otherwise `false`)
+- `SMTP_SECURE`
 - `SMTP_USER`
 - `SMTP_PASS`
 - `SMTP_FROM`
-- `MAIL_TO`
-- `PORT`
 
 ## 3. Make it public (shareable link)
 
@@ -50,5 +60,6 @@ When a user submits the form:
 
 1. The server receives fields and uploaded drawings.
 2. The server creates a PDF summary of the form.
-3. The server emails you (`MAIL_TO`) with the PDF + uploaded files.
-
+3. The server saves everything under `submissions/<reference>/`:
+4. `quote-request.pdf`, `answers.txt`, `form.json`, and uploaded files in `uploads/`.
+5. If email is configured, it also forwards the submission by email.
