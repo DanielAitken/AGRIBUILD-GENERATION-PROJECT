@@ -12,7 +12,10 @@ require("dotenv").config();
 const app = express();
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 4 * 1024 * 1024 },
+  limits: {
+    fileSize: Number(process.env.MAX_UPLOAD_FILE_MB || 15) * 1024 * 1024,
+    files: Number(process.env.MAX_UPLOAD_FILES || 10),
+  },
 });
 
 app.use((req, _res, next) => {
@@ -301,7 +304,9 @@ function buildQuotePdf(body, files) {
         fields: [
           ["Steelwork finish", "steelwork_finish"],
           ["Roof material", "roof_material"],
+          ["Other roof material details", "roof_material_custom"],
           ["Wall material", "wall_material"],
+          ["Other wall material details", "wall_material_custom"],
           ["Heated", "heated"],
           ["Cladding preference", "cladding"],
           ["Door types", "door_types"],
@@ -397,7 +402,14 @@ app.get("/quote", (_req, res) => {
   res.redirect(303, "/");
 });
 
-app.post("/quote", upload.array("drawings"), async (req, res) => {
+const parseQuoteUploads = (req, res, next) => {
+  upload.array("drawings")(req, res, (err) => {
+    if (err) return next(err);
+    next();
+  });
+};
+
+app.post("/quote", parseQuoteUploads, async (req, res) => {
   try {
     const forwardTo = firstDefined(process.env.FORWARD_TO, process.env.MAIL_TO);
     const fromAddress = firstDefined(
@@ -425,7 +437,9 @@ app.post("/quote", upload.array("drawings"), async (req, res) => {
       "",
       formatField("Steelwork finish", body.steelwork_finish),
       formatField("Roof material", body.roof_material),
+      formatField("Other roof material details", body.roof_material_custom),
       formatField("Wall material", body.wall_material),
+      formatField("Other wall material details", body.wall_material_custom),
       formatField("Heated", body.heated),
       formatField("Cladding preference", body.cladding),
       formatField("Door types", body.door_types),
@@ -549,6 +563,32 @@ app.get("/thank-you", (_req, res) => {
 
 app.use((_req, res) => {
   res.status(404).send("Not Found. Please open / and submit the form.");
+});
+
+app.use((err, req, res, _next) => {
+  if (err instanceof multer.MulterError) {
+    if (err.code === "LIMIT_FILE_SIZE") {
+      sendQuoteResponse(
+        req,
+        res,
+        413,
+        false,
+        "One of the uploaded files is too large. Max per file is 15MB."
+      );
+      return;
+    }
+    sendQuoteResponse(
+      req,
+      res,
+      400,
+      false,
+      "Upload failed. Please check your files and try again."
+    );
+    return;
+  }
+
+  console.error("Unhandled error:", err);
+  sendQuoteResponse(req, res, 500, false, "Sorry, something went wrong.");
 });
 
 const port = Number(process.env.PORT || 3000);

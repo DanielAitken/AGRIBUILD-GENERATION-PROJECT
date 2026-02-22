@@ -231,6 +231,7 @@
     }
     .qb-file input[type="file"]{ font-size:0.8rem; }
     .qb-small-note{ font-size:0.72rem; color:var(--qb-text-muted); }
+    .qb-hidden{ display:none !important; }
     .qb-roof-visuals{
       background:#ffffff;
       border:1px solid var(--qb-border);
@@ -495,6 +496,17 @@
                   <option>Other / to be confirmed</option>
                 </select>
               </div>
+              <div class="qb-field qb-hidden" id="roofOtherField">
+                <label class="qb-label">
+                  Other roof material details <span>optional</span>
+                </label>
+                <input
+                  type="text"
+                  name="roof_material_custom"
+                  class="qb-input"
+                  placeholder="Please tell us the roof material you want"
+                />
+              </div>
 
               <div class="qb-field qb-roof-visuals">
                 <label class="qb-label">
@@ -519,6 +531,17 @@
                   <option>Timber boarding</option>
                   <option>Other / to be confirmed</option>
                 </select>
+              </div>
+              <div class="qb-field qb-hidden" id="wallOtherField">
+                <label class="qb-label">
+                  Other wall material details <span>optional</span>
+                </label>
+                <input
+                  type="text"
+                  name="wall_material_custom"
+                  class="qb-input"
+                  placeholder="Please tell us the wall material you want"
+                />
               </div>
 
               <div class="qb-field qb-roof-visuals">
@@ -928,6 +951,10 @@
       const roofSelect = form.elements["roof_material"];
       const wallGalleryEl = document.getElementById("wallGallery");
       const wallSelect = form.elements["wall_material"];
+      const roofOtherField = document.getElementById("roofOtherField");
+      const wallOtherField = document.getElementById("wallOtherField");
+      const roofOtherInput = form.elements["roof_material_custom"];
+      const wallOtherInput = form.elements["wall_material_custom"];
       const roofSummaryVisual = document.getElementById("summaryRoofVisual");
       const roofSummaryImage = roofSummaryVisual
         ? roofSummaryVisual.querySelector(".qb-roof-summary-img")
@@ -959,12 +986,35 @@
         return match ? match.textContent : "";
       }
 
+      function isOtherMaterial(value) {
+        return String(value || "").toLowerCase().includes("other");
+      }
+
+      function syncOtherMaterialFields() {
+        const roofIsOther = isOtherMaterial(roofSelect ? roofSelect.value : "");
+        const wallIsOther = isOtherMaterial(wallSelect ? wallSelect.value : "");
+
+        if (roofOtherField) roofOtherField.classList.toggle("qb-hidden", !roofIsOther);
+        if (wallOtherField) wallOtherField.classList.toggle("qb-hidden", !wallIsOther);
+
+        if (roofOtherInput) {
+          roofOtherInput.disabled = !roofIsOther;
+          roofOtherInput.required = roofIsOther;
+          if (!roofIsOther) roofOtherInput.value = "";
+        }
+        if (wallOtherInput) {
+          wallOtherInput.disabled = !wallIsOther;
+          wallOtherInput.required = wallIsOther;
+          if (!wallIsOther) wallOtherInput.value = "";
+        }
+      }
+
       const roofGalleryData = [
         {
           match: "Fibre cement",
           label: "Fibre cement",
           note: "Muted, low-glare finish often used on livestock buildings.",
-          image: "https://images.pexels.com/photos/2219024/pexels-photo-2219024.jpeg?auto=compress&cs=tinysrgb&w=1200"
+          image: "assets/fibre-cement-roof-panel.png?v=1"
         },
         {
           match: "Steel - single skin",
@@ -987,7 +1037,7 @@
         {
           match: "Other",
           label: "Other / custom",
-          note: "Placeholder for custom finishes or colours.",
+          note: "Select this and type your preferred roof material below.",
           image: "https://images.unsplash.com/photo-1505691938895-1758d7feb511?auto=format&fit=crop&w=1200&q=80"
         }
       ]
@@ -1017,7 +1067,7 @@
           match: "Fibre cement",
           label: "Fibre cement",
           note: "Traditional, low-glare finish for rural settings.",
-          image: "https://images.pexels.com/photos/2219024/pexels-photo-2219024.jpeg?auto=compress&cs=tinysrgb&w=1200"
+          image: "assets/fibre-cement-roof-panel.png?v=1"
         },
         {
           match: "Timber",
@@ -1028,7 +1078,7 @@
         {
           match: "Other",
           label: "Other / custom",
-          note: "Placeholder for bespoke wall finishes.",
+          note: "Select this and type your preferred wall material below.",
           image: "https://images.unsplash.com/photo-1469474968028-56623f02e42e?auto=format&fit=crop&w=1200&q=80"
         }
       ]
@@ -1237,11 +1287,13 @@
 
       if (roofSelect) {
         roofSelect.addEventListener("change", () => {
+          syncOtherMaterialFields();
           renderRoofGallery();
         });
       }
       if (wallSelect) {
         wallSelect.addEventListener("change", () => {
+          syncOtherMaterialFields();
           renderWallGallery();
         });
       }
@@ -1531,13 +1583,23 @@
             : "Sizing to be confirmed";
 
         const roofVal = getVal("roof_material");
+        const roofCustom = getVal("roof_material_custom");
         document.getElementById("summaryRoof").textContent =
-          roofVal || "To be confirmed";
+          roofVal
+            ? isOtherMaterial(roofVal) && roofCustom
+              ? `${roofVal}: ${roofCustom}`
+              : roofVal
+            : "To be confirmed";
         updateRoofSummaryVisual(roofVal);
 
         const wallVal = getVal("wall_material");
+        const wallCustom = getVal("wall_material_custom");
         document.getElementById("summaryWall").textContent =
-          wallVal || "To be confirmed";
+          wallVal
+            ? isOtherMaterial(wallVal) && wallCustom
+              ? `${wallVal}: ${wallCustom}`
+              : wallVal
+            : "To be confirmed";
 
         const locationPieces = [];
         const postcode = getVal("site_postcode");
@@ -1629,6 +1691,7 @@
       });
 
       // Initialise
+      syncOtherMaterialFields();
       renderRoofGallery();
       renderWallGallery();
       updateSummary();
@@ -1636,4 +1699,3 @@
   </script>
 </body>
 </html>
-
