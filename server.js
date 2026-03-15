@@ -18,6 +18,11 @@ const upload = multer({
   },
 });
 
+const submissionsRoot = firstDefined(
+  process.env.SUBMISSIONS_DIR,
+  path.join(__dirname, "submissions")
+);
+
 app.use((req, _res, next) => {
   console.log(`${new Date().toISOString()} ${req.method} ${req.path}`);
   next();
@@ -59,7 +64,6 @@ function safeFilename(value) {
 }
 
 async function saveSubmission({ body, files, lines, pdfBuffer }) {
-  const submissionsRoot = path.join(__dirname, "submissions");
   const submissionId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${crypto
     .randomBytes(3)
     .toString("hex")}`;
